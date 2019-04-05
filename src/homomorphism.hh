@@ -9,6 +9,7 @@
 #include "value_ordering.hh"
 
 #include <functional>
+#include <iosfwd>
 #include <list>
 #include <memory>
 #include <string>
@@ -26,6 +27,9 @@ struct HomomorphismParams
 {
     /// Timeout handler
     std::shared_ptr<Timeout> timeout;
+
+    /// Proof logger
+    std::ostream * logger = nullptr;
 
     /// The start time of the algorithm.
     std::chrono::time_point<std::chrono::steady_clock> start_time;

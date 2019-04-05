@@ -104,6 +104,14 @@ class FixedBitSet
                 _bits[i] = _bits[i] & other._bits[i];
         }
 
+        auto operator & (const FixedBitSet<words_> & other) const -> FixedBitSet<words_>
+        {
+            FixedBitSet<words_> result;
+            for (typename Bits::size_type i = 0 ; i < words_ ; ++i)
+                result._bits[i] = _bits[i] & other._bits[i];
+            return result;
+        }
+
         /**
          * Union (bitwise-or) with another set.
          */

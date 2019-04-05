@@ -28,6 +28,8 @@
 #include <boost/dynamic_bitset.hpp>
 
 using std::atomic;
+using std::conditional_t;
+using std::endl;
 using std::fill;
 using std::find_if;
 using std::function;
@@ -49,6 +51,7 @@ using std::string;
 using std::swap;
 using std::thread;
 using std::to_string;
+using std::tuple;
 using std::uniform_int_distribution;
 using std::unique_lock;
 using std::unique_ptr;
@@ -167,7 +170,7 @@ namespace
             }
         }
 
-        auto prepare(const HomomorphismParams & params) -> bool
+        auto prepare(const HomomorphismParams & params, bool logging) -> bool
         {
             // pattern and target degrees, for the main graph
             patterns_degrees.at(0).resize(pattern_size);
@@ -184,8 +187,11 @@ namespace
                 sort(pattern_degrees_sorted.begin(), pattern_degrees_sorted.end(), greater<int>());
                 sort(target_degrees_sorted.begin(), target_degrees_sorted.end(), greater<int>());
                 for (unsigned i = 0 ; i < pattern_degrees_sorted.size() ; ++i)
-                    if (pattern_degrees_sorted.at(i) > target_degrees_sorted.at(i))
+                    if (pattern_degrees_sorted.at(i) > target_degrees_sorted.at(i)) {
+                        if (logging)
+                            *params.logger << "UNSAT: pattern degrees cannot be mapped onto target degrees" << endl;
                         return false;
+                    }
             }
 
             for (unsigned i = 0 ; i < target_size ; ++i)
@@ -348,7 +354,7 @@ namespace
         }
     };
 
-    template <typename BitSetType_, typename ArrayType_>
+    template <typename BitSetType_, typename ArrayType_, bool logging_>
     struct Searcher
     {
         using Model = SubgraphModel<BitSetType_, ArrayType_>;
@@ -409,7 +415,25 @@ namespace
                 // if we're adjacent...
                 if (pattern_adjacency_bits & (1u << g)) {
                     // ...then we can only be mapped to adjacent vertices
-                    d.values &= model.target_graph_rows[current_assignment.target_vertex * max_graphs_ + g];
+                    if constexpr (! logging_) {
+                        d.values &= model.target_graph_rows[current_assignment.target_vertex * max_graphs_ + g];
+                    }
+                    else {
+                        auto old_values = d.values;
+                        d.values &= model.target_graph_rows[current_assignment.target_vertex * max_graphs_ + g];
+                        auto removed_values = old_values & ~d.values;
+                        auto c = removed_values.find_first();
+                        if (c != decltype(removed_values)::npos) {
+                            *params.logger << "ADJACENCY: given " << current_assignment.pattern_vertex << "="
+                                << current_assignment.target_vertex << ", " << d.v << " !in { " << c;
+                            removed_values.reset(c);
+                            for (c = removed_values.find_first() ; c != decltype(removed_values)::npos ; c = removed_values.find_first()) {
+                                removed_values.reset(c);
+                                *params.logger << ", " << c;
+                            }
+                            *params.logger << " } using graph pair " << g << endl;
+                        }
+                    }
                 }
             }
 
@@ -450,11 +474,24 @@ namespace
                 // injectivity
                 switch (params.injectivity) {
                     case Injectivity::Injective:
+                        if constexpr (logging_) {
+                            if (d.values.test(current_assignment.target_vertex)) {
+                                *params.logger << "INJECTIVITY: given " << current_assignment.pattern_vertex << "="
+                                   << current_assignment.target_vertex << ", " << d.v << "!=" << current_assignment.target_vertex << endl;
+                            }
+                        }
                         d.values.reset(current_assignment.target_vertex);
                         break;
                     case Injectivity::LocallyInjective:
-                        if (both_in_the_neighbourhood_of_some_vertex(current_assignment.pattern_vertex, d.v))
+                        if (both_in_the_neighbourhood_of_some_vertex(current_assignment.pattern_vertex, d.v)) {
+                            if constexpr (logging_) {
+                                if (d.values.test(current_assignment.target_vertex)) {
+                                    *params.logger << "LOCAL_INJECTIVITY: given " << current_assignment.pattern_vertex << "="
+                                        << current_assignment.target_vertex << ", " << d.v << "!=" << current_assignment.target_vertex << endl;
+                                }
+                            }
                             d.values.reset(current_assignment.target_vertex);
+                        }
                         break;
                     case Injectivity::NonInjective:
                         break;
@@ -486,8 +523,12 @@ namespace
 
                 // we might have removed values
                 d.count = d.values.count();
-                if (0 == d.count)
+                if (0 == d.count) {
+                    if constexpr (logging_) {
+                        *params.logger << "FAIL: domain wipeout on " << d.v << endl;
+                    }
                     return false;
+                }
             }
 
             return true;
@@ -502,9 +543,21 @@ namespace
                 // what are we assigning?
                 Assignment current_assignment = { branch_domain->v, unsigned(branch_domain->values.find_first()) };
 
+                if constexpr (logging_) {
+                    *params.logger << "UNIT: " << current_assignment.pattern_vertex << "=" << current_assignment.target_vertex << endl;
+                }
+
                 // ok, make the assignment
                 branch_domain->fixed = true;
                 assignments.values.push_back({ current_assignment, false, -1, -1 });
+
+                if constexpr (logging_) {
+                    *params.logger << "TRAIL:";
+                    for (auto & a : assignments.values)
+                        *params.logger << " " << (a.is_decision ? "" : "(") << a.assignment.pattern_vertex << "="
+                            << a.assignment.target_vertex << (a.is_decision ? "" : ")");
+                    *params.logger << endl;
+                }
 
                 // propagate watches
                 if (might_have_watches(params))
@@ -523,13 +576,21 @@ namespace
                                 });
 
                 // propagate simple all different and adjacency
-                if (! propagate_simple_constraints(new_domains, current_assignment))
+                if (! propagate_simple_constraints(new_domains, current_assignment)) {
+                    if constexpr (logging_) {
+                        *params.logger << "FAIL: simple constraints detected inconsistency" << endl;
+                    }
                     return false;
+                }
 
                 // propagate all different
                 if (params.injectivity == Injectivity::Injective)
-                    if (! cheap_all_different(new_domains))
+                    if (! cheap_all_different(new_domains)) {
+                        if constexpr (logging_) {
+                            *params.logger << "FAIL: all different detected inconsistency" << endl;
+                        }
                         return false;
+                    }
             }
 
             return true;
@@ -660,8 +721,12 @@ namespace
                     }
                     return SearchResult::SatisfiableButKeepGoing;
                 }
-                else
+                else {
+                    if constexpr (logging_) {
+                        *params.logger << "SAT: found a solution" << endl;
+                    }
                     return SearchResult::Satisfiable;
+                }
             }
 
             // pull out the remaining values in this domain for branching
@@ -700,6 +765,10 @@ namespace
 
             // for each value remaining...
             for (auto f_v = branch_v.begin(), f_end = branch_v.begin() + branch_v_end ; f_v != f_end ; ++f_v) {
+                if constexpr (logging_) {
+                    *params.logger << "BRANCH " << depth << ": " << branch_domain->v << "=" << *f_v << endl;
+                }
+
                 // modified in-place by appending, we can restore by shrinking
                 auto assignments_size = assignments.values.size();
 
@@ -712,6 +781,10 @@ namespace
                 // propagate
                 ++propagations;
                 if (! propagate(new_domains, assignments)) {
+                    if constexpr (logging_) {
+                        *params.logger << "FAIL " << depth << ": propagation of " << branch_domain->v << "=" << *f_v << " failed" << endl;
+                    }
+
                     // failure? restore assignments and go on to the next thing
                     assignments.values.resize(assignments_size);
                     actually_hit_a_failure = true;
@@ -765,8 +838,13 @@ namespace
                 post_nogood(assignments);
                 return SearchResult::Restart;
             }
-            else
+            else {
+                if constexpr (logging_) {
+                    *params.logger << "BACKTRACK " << depth << ": out of values for " << branch_domain->v << endl;
+                }
+
                 return SearchResult::Unsatisfiable;
+            }
         }
 
         auto cheap_all_different(Domains & domains) -> bool
@@ -800,6 +878,21 @@ namespace
 
             // counting all-different
             BitSetType_ domains_so_far{ model.target_size, 0 }, hall{ model.target_size, 0 };
+
+            struct ExtraAllDiffLoggingData
+            {
+                unsigned last_domains_seen, last_domain_in_hall_set;
+                ArrayType_ domains_seen;
+            };
+
+            conditional_t<logging_, ExtraAllDiffLoggingData, tuple<> > extra_logging_data;
+            if constexpr (logging_) {
+                extra_logging_data.last_domains_seen = 0;
+                extra_logging_data.last_domain_in_hall_set = 0;
+                if constexpr (is_same<ArrayType_, vector<int> >::value)
+                    extra_logging_data.domains_seen.resize(model.pattern_size);
+            }
+
             unsigned neighbours_so_far = 0;
 
             for (unsigned i = 0 ; i <= domains.size() ; ++i) {
@@ -808,23 +901,78 @@ namespace
                 while (domain_index != -1) {
                     auto & d = domains.at(domain_index);
 
-                    d.values &= ~hall;
-                    d.count = d.values.count();
+                    if constexpr (! logging_) {
+                        d.values &= ~hall;
+                        d.count = d.values.count();
+                    }
+                    else {
+                        if (hall.any()) {
+                            auto old_values = d.values;
 
-                    if (0 == d.count)
+                            d.values &= ~hall;
+                            d.count = d.values.count();
+
+                            auto removed_values = old_values & ~d.values;
+                            auto c = removed_values.find_first();
+                            if (c != decltype(removed_values)::npos) {
+                                *params.logger << "HALL: union of";
+                                for (unsigned e = 0 ; e < extra_logging_data.last_domain_in_hall_set ; ++e)
+                                    *params.logger << " " << extra_logging_data.domains_seen[e];
+                                *params.logger << " is";
+                                auto hc = hall;
+                                for (auto hv = hc.find_first() ; hv != decltype(hc)::npos ; hv = hc.find_first()) {
+                                    hc.reset(hv);
+                                    *params.logger << " " << hv;
+                                }
+                                *params.logger << " so " << d.v << " !in { " << c;
+                                removed_values.reset(c);
+                                for (c = removed_values.find_first() ; c != decltype(removed_values)::npos ; c = removed_values.find_first()) {
+                                    removed_values.reset(c);
+                                    *params.logger << ", " << c;
+                                }
+                                *params.logger << " }" << endl;
+                            }
+                        }
+                    }
+
+                    if (0 == d.count) {
+                        if constexpr (logging_) {
+                            *params.logger << "FAIL: domain wipeout on " << d.v << endl;
+                        }
                         return false;
+                    }
 
                     domains_so_far |= d.values;
                     ++neighbours_so_far;
 
                     unsigned domains_so_far_popcount = domains_so_far.count();
                     if (domains_so_far_popcount < neighbours_so_far) {
+                        if constexpr (logging_) {
+                            *params.logger << "FAIL: union of";
+                            for (unsigned e = 0 ; e < extra_logging_data.last_domain_in_hall_set ; ++e)
+                                *params.logger << " " << extra_logging_data.domains_seen[e];
+                            *params.logger << " is";
+                            auto hc = hall;
+                            for (auto hv = hc.find_first() ; hv != decltype(hc)::npos ; hv = hc.find_first()) {
+                                hc.reset(hv);
+                                *params.logger << " " << hv;
+                            }
+                            *params.logger << " which is not enough values" << endl;
+                        }
                         return false;
                     }
                     else if (domains_so_far_popcount == neighbours_so_far) {
                         // equivalent to hall=domains_so_far
                         hall |= domains_so_far;
+
+                        if constexpr (logging_)
+                            extra_logging_data.last_domain_in_hall_set = extra_logging_data.last_domains_seen + 1;
                     }
+
+                    if constexpr (logging_) {
+                        extra_logging_data.domains_seen[extra_logging_data.last_domains_seen++] = d.v;
+                    }
+
                     domain_index = next[domain_index];
                 }
             }
@@ -843,7 +991,7 @@ namespace
         }
     };
 
-    template <typename BitSetType_, typename ArrayType_>
+    template <typename BitSetType_, typename ArrayType_, bool logging_>
     struct BasicSolver
     {
         using Model = SubgraphModel<BitSetType_, ArrayType_>;
@@ -890,11 +1038,17 @@ namespace
             for (int g = 0 ; g < graphs_to_consider ; ++g) {
                 if (model.targets_degrees.at(g).at(t) < model.patterns_degrees.at(g).at(p)) {
                     // not ok, degrees differ
+                    if constexpr (logging_)
+                        *params.logger << "INIT: " << p << "!=" << t << " due to degree " << model.patterns_degrees.at(g).at(p)
+                            << " > " << model.targets_degrees.at(g).at(t) << " using graph pair " << g << endl;
                     return false;
                 }
                 else if (degree_and_nds_are_exact(params, model.full_pattern_size, model.target_size)
                         && model.targets_degrees.at(g).at(t) != model.patterns_degrees.at(g).at(p)) {
                     // not ok, degrees must be exactly the same
+                    if constexpr (logging_)
+                        *params.logger << "INIT: " << p << "!=" << t << " due to degree " << model.patterns_degrees.at(g).at(p)
+                            << " != " << model.targets_degrees.at(g).at(t) << " using graph pair " << g << endl;
                     return false;
                 }
             }
@@ -914,11 +1068,31 @@ namespace
 
             for (int g = 0 ; g < graphs_to_consider ; ++g) {
                 for (unsigned x = 0 ; x < patterns_ndss.at(g).at(p).size() ; ++x) {
-                    if (targets_ndss.at(g).at(t)->at(x) < patterns_ndss.at(g).at(p).at(x))
+                    if (targets_ndss.at(g).at(t)->at(x) < patterns_ndss.at(g).at(p).at(x)) {
+                        if constexpr (logging_) {
+                            *params.logger << "INIT: " << p << "!=" << t << " due to nds";
+                            for (auto & n : patterns_ndss.at(g).at(p))
+                                *params.logger << " " << n;
+                            *params.logger << " >";
+                            for (auto & n : *targets_ndss.at(g).at(t))
+                                *params.logger << " " << n;
+                            *params.logger << " using graph pair " << g << endl;
+                        }
                         return false;
+                    }
                     else if (degree_and_nds_are_exact(params, model.full_pattern_size, model.target_size)
-                            && targets_ndss.at(g).at(t)->at(x) != patterns_ndss.at(g).at(p).at(x))
+                            && targets_ndss.at(g).at(t)->at(x) != patterns_ndss.at(g).at(p).at(x)) {
+                        if constexpr (logging_) {
+                            *params.logger << "INIT: " << p << "!=" << t << " due to nds";
+                            for (auto & n : patterns_ndss.at(g).at(p))
+                                *params.logger << " " << n;
+                            *params.logger << " !=";
+                            for (auto & n : *targets_ndss.at(g).at(t))
+                                *params.logger << " " << n;
+                            *params.logger << " using graph pair " << g << endl;
+                        }
                         return false;
+                    }
                 }
             }
 
@@ -970,20 +1144,30 @@ namespace
                 for (unsigned j = 0 ; j < model.target_size ; ++j) {
                     bool ok = true;
 
-                    if (! check_label_compatibility(i, j))
+                    if (! check_label_compatibility(i, j)) {
+                        if constexpr (logging_)
+                            *params.logger << "INIT: " << i << "!=" << j << " due to labels" << endl;
                         ok = false;
-                    else if (! check_loop_compatibility(i, j))
+                    }
+                    else if (! check_loop_compatibility(i, j)) {
+                        if constexpr (logging_)
+                            *params.logger << "INIT: " << i << "!=" << j << " due to loops" << endl;
                         ok = false;
-                    else if (! check_degree_compatibility(i, j, graphs_to_consider, patterns_ndss, targets_ndss))
+                    }
+                    else if (! check_degree_compatibility(i, j, graphs_to_consider, patterns_ndss, targets_ndss)) {
                         ok = false;
+                    }
 
                     if (ok)
                         domains.at(i).values.set(j);
                 }
 
                 domains.at(i).count = domains.at(i).values.count();
-                if (0 == domains.at(i).count)
+                if (0 == domains.at(i).count) {
+                    if constexpr (logging_)
+                        *params.logger << "UNSAT: wipeout during init on " << i << endl;
                     return false;
+                }
             }
 
             // quick sanity check that we have enough values
@@ -993,31 +1177,37 @@ namespace
                     domains_union |= d.values;
 
                 unsigned domains_union_popcount = domains_union.count();
-                if (domains_union_popcount < unsigned(model.pattern_size))
+                if (domains_union_popcount < unsigned(model.pattern_size)) {
+                    if constexpr (logging_)
+                        *params.logger << "UNSAT: domains union is less than pattern size after init" << endl;
                     return false;
+                }
             }
 
-            for (auto & d : domains)
+            for (auto & d : domains) {
                 d.count = d.values.count();
+                if constexpr (logging_)
+                    *params.logger << "INIT: " << d.v << " has " << d.count << " values" << endl;
+            }
 
             return true;
         }
     };
 
-    template <typename BitSetType_, typename ArrayType_>
+    template <typename BitSetType_, typename ArrayType_, bool logging_>
     struct SequentialSolver :
-        BasicSolver<BitSetType_, ArrayType_>
+        BasicSolver<BitSetType_, ArrayType_, logging_>
     {
-        using BasicSolver<BitSetType_, ArrayType_>::BasicSolver;
+        using BasicSolver<BitSetType_, ArrayType_, logging_>::BasicSolver;
 
-        using Model = typename BasicSolver<BitSetType_, ArrayType_>::Model;
-        using Domain = typename BasicSolver<BitSetType_, ArrayType_>::Domain;
-        using Domains = typename BasicSolver<BitSetType_, ArrayType_>::Domains;
+        using Model = typename BasicSolver<BitSetType_, ArrayType_, logging_>::Model;
+        using Domain = typename BasicSolver<BitSetType_, ArrayType_, logging_>::Domain;
+        using Domains = typename BasicSolver<BitSetType_, ArrayType_, logging_>::Domains;
 
-        using BasicSolver<BitSetType_, ArrayType_>::model;
-        using BasicSolver<BitSetType_, ArrayType_>::params;
+        using BasicSolver<BitSetType_, ArrayType_, logging_>::model;
+        using BasicSolver<BitSetType_, ArrayType_, logging_>::params;
 
-        using BasicSolver<BitSetType_, ArrayType_>::initialise_domains;
+        using BasicSolver<BitSetType_, ArrayType_, logging_>::initialise_domains;
 
         auto solve() -> HomomorphismResult
         {
@@ -1026,6 +1216,8 @@ namespace
             // domains
             Domains domains(model.pattern_size, Domain{ model.target_size });
             if (! initialise_domains(domains)) {
+                if constexpr (logging_)
+                    *params.logger << "UNSAT: inconsistency in initialising domains" << endl;
                 result.complete = true;
                 return result;
             }
@@ -1041,7 +1233,7 @@ namespace
             bool done = false;
             unsigned number_of_restarts = 0;
 
-            Searcher<BitSetType_, ArrayType_> searcher(model, params);
+            Searcher<BitSetType_, ArrayType_, logging_> searcher(model, params);
 
             while (! done) {
                 ++number_of_restarts;
@@ -1069,6 +1261,8 @@ namespace
                     switch (searcher.restarting_search(assignments_copy, domains, result.nodes, result.propagations,
                                 result.solution_count, 0, *params.restarts_schedule)) {
                         case SearchResult::Satisfiable:
+                            if constexpr (logging_)
+                                *params.logger << "SAT" << endl;
                             searcher.save_result(assignments_copy, result);
                             result.complete = true;
                             done = true;
@@ -1080,11 +1274,15 @@ namespace
                             break;
 
                         case SearchResult::Unsatisfiable:
+                            if constexpr (logging_)
+                                *params.logger << "UNSAT: search complete" << endl;
                             result.complete = true;
                             done = true;
                             break;
 
                         case SearchResult::Aborted:
+                            if constexpr (logging_)
+                                *params.logger << "TIMEOUT" << endl;
                             done = true;
                             break;
 
@@ -1093,6 +1291,8 @@ namespace
                     }
                 }
                 else {
+                    if constexpr (logging_)
+                        *params.logger << "UNSAT: propagation failed at root" << endl;
                     result.complete = true;
                     done = true;
                 }
@@ -1128,23 +1328,23 @@ namespace
         }
     };
 
-    template <typename BitSetType_, typename ArrayType_>
+    template <typename BitSetType_, typename ArrayType_, bool logging_>
     struct ThreadedSolver :
-        BasicSolver<BitSetType_, ArrayType_>
+        BasicSolver<BitSetType_, ArrayType_, logging_>
     {
-        using Model = typename BasicSolver<BitSetType_, ArrayType_>::Model;
-        using Domain = typename BasicSolver<BitSetType_, ArrayType_>::Domain;
-        using Domains = typename BasicSolver<BitSetType_, ArrayType_>::Domains;
+        using Model = typename BasicSolver<BitSetType_, ArrayType_, logging_>::Model;
+        using Domain = typename BasicSolver<BitSetType_, ArrayType_, logging_>::Domain;
+        using Domains = typename BasicSolver<BitSetType_, ArrayType_, logging_>::Domains;
 
-        using BasicSolver<BitSetType_, ArrayType_>::model;
-        using BasicSolver<BitSetType_, ArrayType_>::params;
+        using BasicSolver<BitSetType_, ArrayType_, logging_>::model;
+        using BasicSolver<BitSetType_, ArrayType_, logging_>::params;
 
-        using BasicSolver<BitSetType_, ArrayType_>::initialise_domains;
+        using BasicSolver<BitSetType_, ArrayType_, logging_>::initialise_domains;
 
         unsigned n_threads;
 
         ThreadedSolver(const Model & m, const HomomorphismParams & p, unsigned t) :
-            BasicSolver<BitSetType_, ArrayType_>(m, p),
+            BasicSolver<BitSetType_, ArrayType_, logging_>(m, p),
             n_threads(t)
         {
         }
@@ -1168,7 +1368,7 @@ namespace
             vector<thread> threads;
             threads.reserve(n_threads);
 
-            vector<unique_ptr<Searcher<BitSetType_, ArrayType_> > > searchers{ n_threads };
+            vector<unique_ptr<Searcher<BitSetType_, ArrayType_, logging_> > > searchers{ n_threads };
 
             barrier wait_for_new_nogoods_barrier{ n_threads }, synced_nogoods_barrier{ n_threads };
             atomic<bool> restart_synchroniser{ false };
@@ -1183,7 +1383,7 @@ namespace
 
                 bool just_the_first_thread = (0 == t) && params.delay_thread_creation;
 
-                searchers[t] = make_unique<Searcher<BitSetType_, ArrayType_> >(model, params);
+                searchers[t] = make_unique<Searcher<BitSetType_, ArrayType_, logging_> >(model, params);
                 if (0 != t)
                     searchers[t]->global_rand.seed(t);
 
@@ -1325,7 +1525,7 @@ namespace
         }
     };
 
-    template <typename BitSetType_, typename ArrayType_>
+    template <typename BitSetType_, typename ArrayType_, bool logging_>
     struct SubgraphRunner
     {
         using Model = SubgraphModel<BitSetType_, ArrayType_>;
@@ -1342,12 +1542,14 @@ namespace
         auto run() -> HomomorphismResult
         {
             if (is_nonshrinking(params) && (model.full_pattern_size > model.target_size)) {
+                if constexpr (logging_)
+                    *params.logger << "UNSAT: pattern size > target size" << endl;
                 HomomorphismResult result;
                 result.extra_stats.emplace_back("nonshrinking = false");
                 return result;
             }
 
-            if (! model.prepare(params)) {
+            if (! model.prepare(params, logging_)) {
                 HomomorphismResult result;
                 result.extra_stats.emplace_back("model_consistent = false");
                 result.complete = true;
@@ -1356,7 +1558,7 @@ namespace
 
             HomomorphismResult result;
             if (1 == params.n_threads) {
-                SequentialSolver<BitSetType_, ArrayType_> solver(model, params);
+                SequentialSolver<BitSetType_, ArrayType_, logging_> solver(model, params);
                 result = solver.solve();
             }
             else {
@@ -1364,7 +1566,7 @@ namespace
                     throw UnsupportedConfiguration{ "Threaded search requires restarts" };
 
                 unsigned n_threads = how_many_threads(params.n_threads);
-                ThreadedSolver<BitSetType_, ArrayType_> solver(model, params, n_threads);
+                ThreadedSolver<BitSetType_, ArrayType_, logging_> solver(model, params, n_threads);
                 result = solver.solve();
             }
 
@@ -1372,6 +1574,9 @@ namespace
         }
     };
 }
+
+template <typename BitSetType_, typename ArrayType_> using LoggingSubgraphRunner = SubgraphRunner<BitSetType_, ArrayType_, true>;
+template <typename BitSetType_, typename ArrayType_> using NonLoggingSubgraphRunner = SubgraphRunner<BitSetType_, ArrayType_, false>;
 
 auto solve_homomorphism_problem(const pair<InputGraph, InputGraph> & graphs, const HomomorphismParams & params) -> HomomorphismResult
 {
@@ -1401,7 +1606,9 @@ auto solve_homomorphism_problem(const pair<InputGraph, InputGraph> & graphs, con
 
         return result;
     }
+    else if (params.logger)
+        return select_graph_size<LoggingSubgraphRunner, HomomorphismResult>(AllGraphSizes(), graphs.second, graphs.first, params);
     else
-        return select_graph_size<SubgraphRunner, HomomorphismResult>(AllGraphSizes(), graphs.second, graphs.first, params);
+        return select_graph_size<NonLoggingSubgraphRunner, HomomorphismResult>(AllGraphSizes(), graphs.second, graphs.first, params);
 }
 

@@ -46,7 +46,8 @@ auto main(int argc, char * argv[]) -> int
         display_options.add_options()
             ("help",                                         "Display help information")
             ("timeout",            po::value<int>(),         "Abort after this many seconds")
-            ("parallel",                                     "Use auto-configured parallel search (highly nondeterministic runtimes)");
+            ("parallel",                                     "Use auto-configured parallel search (highly nondeterministic runtimes)")
+            ("proof-logging",                                "Output a proof log to stderr");
 
         po::options_description problem_options{ "Problem options" };
         problem_options.add_options()
@@ -148,6 +149,9 @@ auto main(int argc, char * argv[]) -> int
 
         params.triggered_restarts = options_vars.count("triggered-restarts") || options_vars.count("parallel");
 
+        if (options_vars.count("proof-logging"))
+            params.logger = &cerr;
+
         if (options_vars.count("threads"))
             params.n_threads = options_vars["threads"].as<unsigned>();
         else if (options_vars.count("parallel"))
@@ -217,6 +221,7 @@ auto main(int argc, char * argv[]) -> int
 
         params.clique_detection = ! options_vars.count("no-clique-detection");
         params.remove_isolated_vertices = ! options_vars.count("no-isolated-vertex-removal");
+        params.original_graph_only = options_vars.count("original-graph-only");
 
         char hostname_buf[255];
         if (0 == gethostname(hostname_buf, 255))
