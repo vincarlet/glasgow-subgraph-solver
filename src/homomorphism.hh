@@ -66,6 +66,9 @@ struct HomomorphismParams
 
     /// Are we allowed to remove isolated vertices?
     bool remove_isolated_vertices = true;
+
+    /// Use original graphs only, no supplemental graphs?
+    bool original_graph_only = false;
 };
 
 struct HomomorphismResult

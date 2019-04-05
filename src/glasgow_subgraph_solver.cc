@@ -78,7 +78,8 @@ auto main(int argc, char * argv[]) -> int
         po::options_description mangling_options{ "Advanced input processing options" };
         mangling_options.add_options()
             ("no-clique-detection",                            "Disable clique / independent set detection")
-            ("no-isolated-vertex-removal",                     "Disable isolated vertex removal");
+            ("no-isolated-vertex-removal",                     "Disable isolated vertex removal")
+            ("original-graph-only",                            "Use only the original graphs for propagation, no supplemental graphs");
         display_options.add(mangling_options);
 
         po::options_description parallel_options{ "Advanced parallelism options" };
