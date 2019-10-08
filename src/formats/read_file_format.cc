@@ -1,9 +1,11 @@
 /* vim: set sw=4 sts=4 et foldmethod=syntax : */
 
 #include "formats/read_file_format.hh"
+#include "formats/graph_file_error.hh"
 #include "formats/dimacs.hh"
 #include "formats/lad.hh"
 #include "formats/csv.hh"
+#include "formats/vf.hh"
 
 #include <fstream>
 #include <regex>
@@ -25,7 +27,7 @@ auto detect_format(ifstream & infile, const string & filename) -> string
 {
     string line;
     if (! getline(infile, line) || line.empty())
-        throw GraphFileError{ filename, "unable to read file to detect file format", true };
+        throw GraphFileError{ filename, "unable to read file to detect file format", true};
 
     static const regex
         dimacs_comment{ R"(c(\s.*)?)" },
@@ -34,7 +36,10 @@ auto detect_format(ifstream & infile, const string & filename) -> string
         lad_zero_labelled_line{ R"(0 \d+)" },
         lad_zero_unlabelled_line{ R"(0)" },
         lad_line{ R"(\d+\s+(\d+\s+)*\d+\s*)" },
-        csv_problem{ R"(\S+,\S+)" };
+        csv_problem{ R"(\S+,\S+)" },
+        vf_unlabelled_line {R"(\d+)"},
+        vf_labelled_line {R"(\d+\s+(\d+\s+))"};
+
 
     smatch match;
     if (regex_match(line, match, dimacs_comment)) {
@@ -95,7 +100,7 @@ auto read_file_format(const string & format, const string & filename) -> InputGr
 {
     ifstream infile{ filename };
     if (! infile)
-        throw GraphFileError{ filename, "unable to open file", false };
+        throw GraphFileError{ filename, "unable to open file", true };
 
     auto actual_format = format;
     if (actual_format == "auto") {
@@ -111,10 +116,12 @@ auto read_file_format(const string & format, const string & filename) -> InputGr
         return read_lad(move(infile), filename);
     else if (actual_format == "labelledlad")
         return read_labelled_lad(move(infile), filename);
-    else if (actual_format == "vertexlabelledlad")
-        return read_vertex_labelled_lad(move(infile), filename);
     else if (actual_format == "csv")
         return read_csv(move(infile), filename);
+    else if (actual_format == "vf")
+        return read_vf(move(infile), filename);
+    else if (actual_format == "labelledvf")
+        return read_labelled_vf(move(infile), filename);
     else
         throw GraphFileError{ filename, "Unknown file format '" + format + "'", true };
 }

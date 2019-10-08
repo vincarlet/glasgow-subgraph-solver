@@ -355,8 +355,10 @@ auto main(int argc, char * argv[]) -> int
             cout << "false";
         cout << endl;
 
-        if (params.count_solutions)
+        if (params.count_solutions){
             cout << "solution_count = " << result.solution_count << endl;
+            cout << "firt_solution_time (ms) = " << result.search_fist_solution_elapsed_time << endl;
+        }
 
         cout << "nodes = " << result.nodes << endl;
         cout << "propagations = " << result.propagations << endl;

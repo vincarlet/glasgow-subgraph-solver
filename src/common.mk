@@ -6,6 +6,7 @@ SOURCES := \
     formats/graph_file_error.cc \
     formats/input_graph.cc \
     formats/lad.cc \
+    formats/vf.cc \
     formats/read_file_format.cc \
     clique.cc \
     configuration.cc \

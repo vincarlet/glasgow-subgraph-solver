@@ -859,7 +859,9 @@ namespace
                 unsigned long long & propagations,
                 unsigned long long & solution_count,
                 int depth,
-                RestartsSchedule & restarts_schedule) -> SearchResult
+                RestartsSchedule & restarts_schedule,
+                unsigned long long & first_solution_time,
+                std::chrono::time_point<std::chrono::steady_clock> & search_start_time) -> SearchResult
         {
             if (params.timeout->should_abort())
                 return SearchResult::Aborted;
@@ -880,7 +882,12 @@ namespace
                     params.proof->post_solution(solution_in_proof_form(assignments));
 
                 if (params.count_solutions) {
-                    ++solution_count;
+                    //++solution_count;
+                    if(!solution_count++)
+                    {
+                        first_solution_time = duration_cast<milliseconds>(steady_clock::now() - search_start_time).count();
+                    }
+
                     if (params.enumerate_callback) {
                         VertexToVertexMapping mapping;
                         expand_to_full_result(assignments, mapping);
@@ -959,7 +966,7 @@ namespace
 
                 // recursive search
                 auto search_result = restarting_search(assignments, new_domains, nodes, propagations,
-                        solution_count, depth + 1, restarts_schedule);
+                        solution_count, depth + 1, restarts_schedule, first_solution_time, search_start_time);
 
                 switch (search_result) {
                     case SearchResult::Satisfiable:
@@ -1398,7 +1405,8 @@ namespace
                     auto assignments_copy = assignments;
 
                     switch (searcher.restarting_search(assignments_copy, domains, result.nodes, result.propagations,
-                                result.solution_count, 0, *params.restarts_schedule)) {
+                                result.solution_count, 0, *params.restarts_schedule, 
+                                result.search_fist_solution_elapsed_time, search_start_time)) {
                         case SearchResult::Satisfiable:
                             searcher.save_result(assignments_copy, result);
                             result.complete = true;
@@ -1509,10 +1517,14 @@ namespace
             function<auto (unsigned) -> void> work_function = [&searchers, &common_domains, &threads, &work_function,
                         &model = this->model, &params = this->params, n_threads = this->n_threads,
                         &common_result, &common_result_mutex, &by_thread_nodes, &by_thread_propagations,
-                        &wait_for_new_nogoods_barrier, &synced_nogoods_barrier, &restart_synchroniser] (unsigned t) -> void
+                        &wait_for_new_nogoods_barrier, &synced_nogoods_barrier, &restart_synchroniser, 
+                        &search_start_time] (unsigned t) -> void
             {
                 // do the search
                 HomomorphismResult thread_result;
+
+                // start search timer
+                auto th_search_start_time = steady_clock::now();
 
                 bool just_the_first_thread = (0 == t) && params.delay_thread_creation;
 
@@ -1568,8 +1580,10 @@ namespace
                     if (searchers[t]->propagate(domains, thread_assignments)) {
                         auto assignments_copy = thread_assignments;
 
-                        switch (searchers[t]->restarting_search(assignments_copy, domains, thread_result.nodes, thread_result.propagations,
-                                    thread_result.solution_count, 0, *thread_restarts_schedule)) {
+                        switch (searchers[t]->restarting_search(assignments_copy, domains, thread_result.nodes, 
+                                    thread_result.propagations,
+                                    thread_result.solution_count, 0, *thread_restarts_schedule,
+                                    thread_result.search_fist_solution_elapsed_time, search_start_time)) {
                             case SearchResult::Satisfiable:
                                 searchers[t]->save_result(assignments_copy, thread_result);
                                 thread_result.complete = true;
@@ -1629,6 +1643,11 @@ namespace
                 common_result.propagations += thread_result.propagations;
                 common_result.solution_count += thread_result.solution_count;
                 common_result.complete = common_result.complete || thread_result.complete;
+                
+                if (thread_result.search_fist_solution_elapsed_time >=0 &&
+                    thread_result.search_fist_solution_elapsed_time < common_result.search_fist_solution_elapsed_time)
+                    common_result.search_fist_solution_elapsed_time = thread_result.search_fist_solution_elapsed_time;
+
                 for (auto & x : thread_result.extra_stats)
                     common_result.extra_stats.push_back("t" + to_string(t) + "_" + x);
 

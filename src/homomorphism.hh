@@ -110,6 +110,9 @@ struct HomomorphismResult
     /// Number of solutions, only if enumerating
     unsigned long long solution_count = 0;
 
+    /// Time of the first solution found
+    unsigned long long search_fist_solution_elapsed_time = -1;
+
     /// Did we perform a complete search?
     bool complete = false;
 };
